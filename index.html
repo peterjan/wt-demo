@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebTransport Demo</title>
+    <style>
+        body {
+          font-family: sans-serif;
+        }
+  
+        h1 {
+          margin: 0 auto;
+          width: fit-content;
+        }
+        
+        h2 {
+          border-bottom: 1px dotted #333;
+          font-size: 120%;
+          font-weight: normal;
+          padding-bottom: 0.2em;
+          padding-top: 0.5em;
+        }
+        
+        code {
+          background-color: #eee;
+        }
+        
+        input[type=text], textarea {
+          font-family: monospace;
+        }
+        
+        #top {
+          display: flex;
+          flex-direction: row-reverse;
+          flex-wrap: wrap;
+          justify-content: center;
+        }
+        
+        #explanation {
+          border: 1px dotted black;
+          font-size: 90%;
+          height: fit-content;
+          margin-bottom: 1em;
+          padding: 1em;
+          width: 13em;
+        }
+        
+        #tool {
+          flex-grow: 1;
+          margin: 0 auto;
+          max-width: 26em;
+          padding: 0 1em;
+          width: 26em;
+        }
+        
+        .input-line {
+          display: flex;
+          align-items: center;
+          margin-bottom: 10px;
+        }
+        
+        .input-line input[type=text] {
+          flex-grow: 1;
+          margin: 0 0.5em;
+        }
+
+        .input-line label {
+            width: 90px;
+            margin-right: 10px;
+            text-align: left;
+        }
+        
+        textarea {
+          height: 3em;
+          width: 100%;
+        }
+        
+        #send {
+          margin-top: 0.5em;
+          width: 15em;
+        }
+        
+        #event-log {
+          border: 1px dotted black;
+          font-family: monospace;
+          height: 12em;
+          overflow: scroll;
+          padding-bottom: 1em;
+          padding-top: 1em;
+        }
+        
+        .log-error {
+          color: darkred;
+        }
+        
+        #explanation ul {
+          padding-left: 1em;
+        }
+    </style>
+    <script>
+    let stream;
+    let transport;
+    let datagramWriter;
+
+    async function connect() {
+      const url = document.getElementById('url').value;
+      const hash = document.getElementById('hash').value;
+
+      try {
+        transport = new WebTransport(url, {
+          "serverCertificateHashes": [{
+              "algorithm": "sha-256",
+              "value": base64ToArrayBuffer(hash)
+          }]
+        });
+        addToEventLog('Initiating connection...');
+      } catch (e) {
+        addToEventLog('Failed to create connection object. ' + e, 'error');
+        return;
+      }
+
+      try {
+        await transport.ready;
+        addToEventLog('Connection ready.');
+      } catch (e) {
+        addToEventLog('Connection failed. ' + e, 'error');
+        return;
+      }
+
+      transport
+        .closed
+        .then(() => {
+          addToEventLog('Connection closed normally.');
+        })
+        .catch(() => {
+          addToEventLog('Connection closed abruptly.', 'error');
+        });
+
+      try {
+        currentDatagramWriter = transport.datagrams.writable.getWriter();
+        addToEventLog('Datagram writer ready.');
+      } catch (e) {
+        addToEventLog('Sending datagrams not supported: ' + e, 'error');
+        return;
+      }
+
+      readDatagrams();
+      // acceptUniStreams();
+      document.forms.sending.elements.send.disabled = false;
+      document.getElementById('connect').disabled = true;
+    }
+
+    async function acceptUniStreams() {
+      try {
+        var reader = transport.incomingUnidirectionalStreams.getReader();
+        addToEventLog('Stream reader ready.');
+      } catch (e) {
+        addToEventLog('Error while accepting stream: ' + e, 'error');
+        return;
+      }
+    }
+
+    async function readFromStream(stream) {    
+      try {
+        var reader = stream.readable.getReader();
+        addToEventLog('Stream reader ready.');
+      } catch (e) {
+        addToEventLog('Could not get reader: ' + e, 'error');
+        return;
+      }
+
+      try {
+        await readData(reader)
+      } catch (e) {
+        addToEventLog('Error while reading from stream: ' + e, 'error');
+      }
+    } 
+
+    async function readDatagrams() {
+      try {
+        var reader = transport.datagrams.readable.getReader();
+        addToEventLog('Datagram reader ready.');
+      } catch (e) {
+        addToEventLog('Receiving datagrams not supported: ' + e, 'error');
+        return;
+      }
+
+      try {
+        await readData(reader)
+      } catch (e) {
+        addToEventLog('Error while reading datagrams: ' + e, 'error');
+      }
+    }
+
+    async function readData(reader) {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        addToEventLog('Server says: ' + new TextDecoder().decode(value));
+      }
+    }
+
+    async function sendData() {
+      let form = document.forms.sending.elements;
+      let encoder = new TextEncoder('utf-8');
+      let rawData = sending.data.value;
+      let data = encoder.encode(rawData);
+
+      try {
+        switch (form.sendtype.value) {
+          case 'datagram':
+            await datagramWriter.write(data);
+            addToEventLog('Sent datagram: ' + rawData);
+            break;
+          case 'unidi': {
+            let stream = await transport.createUnidirectionalStream();
+            let writer = stream.getWriter();
+            await writer.write(data);
+            await writer.close();
+            addToEventLog('Sent a unidirectional stream with data: ' + rawData);
+            break;
+          }
+          case 'bidi': {
+            let stream = await transport.createBidirectionalStream();
+
+            // write data to the stream
+            let writer = stream.writable.getWriter();
+            await writer.write(data);
+            await writer.close();
+            addToEventLog('Sent data: ' + rawData);
+
+            // read data from the stream
+            readFromStream(stream)
+            break;
+          }
+        }
+      } catch (e) {
+        addToEventLog('Error while sending data: ' + e, 'error');
+      }
+    }
+    function addToEventLog(text, severity = 'info') {
+      let log = document.getElementById('event-log');
+      let mostRecentEntry = log.lastElementChild;
+      let entry = document.createElement('li');
+      entry.innerText = text;
+      entry.className = 'log-' + severity;
+      log.appendChild(entry);
+
+      // If the most recent entry in the log was visible, scroll the log to the
+      // newly added element.
+      if (mostRecentEntry != null &&
+          mostRecentEntry.getBoundingClientRect().top <
+              log.getBoundingClientRect().bottom) {
+        entry.scrollIntoView();
+      }
+    }
+
+    function base64ToArrayBuffer(base64) {
+      var binaryString = atob(base64);
+      var bytes = new Uint8Array(binaryString.length);
+      for (var i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+      }
+      return bytes.buffer;
+    }
+    </script>
+</head>
+<body>
+    <div id="tool">
+        <h1>WebTransport Demo</h1>
+        <div>
+          <h2>Establish WebTransport connection</h2>
+
+          <div class="input-line">
+            <label for="url">Server URL:</label>
+            <input type="text" name="url" id="url" value="https://127.0.0.1:4433/demo">
+          </div>
+          <div class="input-line">
+            <label for="url">Cert Hash:</label>
+            <input type="text" name="hash" id="hash" value="Yal33hVSO7LFlT62ihWb0/87VueV5jnnF620Zt8np9s=">
+          </div>
+
+          <input type="button" id="connect" value="Connect" onclick="connect()">
+        </div>
+        
+        <div>
+          <h2>Send data over WebTransport</h2>
+          <form name="sending">
+          <textarea name="data" id="data"></textarea>
+          <div>
+            <input 
+              type="radio" 
+              name="sendtype" 
+              value="datagram"
+              id="datagram" 
+              disabled="true"
+            >
+            <label for="datagram">Send a datagram</label>
+          </div>
+          <div>
+            <input 
+              type="radio"
+              name="sendtype"
+              value="unidi"
+              id="unidi-stream"
+              disabled="true"
+            >
+            <label for="unidi-stream">Open a unidirectional stream</label>
+          </div>
+          <div>
+            <input 
+              type="radio"
+              name="sendtype"
+              value="bidi"
+              id="bidi-stream"
+              checked
+            >
+            <label for="bidi-stream">Open a bidirectional stream</label>
+          </div>
+          <input type="button" id="send" name="send" value="Send data"
+                 disabled onclick="sendData()">
+          </form>
+        </div>
+        <div>
+          <h2>Event log</h2>
+          <ul id="event-log">
+          </ul>
+        </div>
+    </div>
+    </div>
+</body>
+</html>
