@@ -1,5 +1,7 @@
 # WebTransport Demo
 
+
+
 ## Setup
 
 1. Generate the certificate:
@@ -26,6 +28,8 @@ Yal33hVSO7LFlT62ihWb0/87VueV5jnnF620Zt8np9s=
 ```
 
 3. Open `index.html` in Chrome and connect to the server
+
+![](./setup.png)
 
 ## NOTES (ignore)
 
