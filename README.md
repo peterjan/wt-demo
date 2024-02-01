@@ -31,26 +31,38 @@ Yal33hVSO7LFlT62ihWb0/87VueV5jnnF620Zt8np9s=
 
 ![](./setup.png)
 
-## NOTES (ignore)
+## Main Resources
 
-### Certificates
+- https://github.com/adriancable/webtransport-go
+- https://github.com/quic-go/webtransport-go
+- https://www.w3.org/TR/webtransport/
+- https://developer.mozilla.org/en-US/docs/Web/API/WebTransport/WebTransport
 
-I used to try and generate the fingerprint myself using:
+## Notes
+
+1. Seems like [ppl have issues](https://github.com/quic-go/webtransport-go/issues/112) connecting WebTransport in Chrome to this webtransport-go implementation.
+
+2. This is interesting, it's an interoperability test for webtransport-go and your local browser. https://github.com/quic-go/webtransport-go/tree/master/interop
+
+3. Minimal browser client that can be pasted into the console:
+
+```
+// 	let transport = new WebTransport("https://localhost:4433/counter");
+// 	await transport.ready;
+// 	let stream = await transport.createBidirectionalStream();
+// 	let encoder = new TextEncoder();
+// 	let decoder = new TextDecoder();
+// 	let writer = stream.writable.getWriter();
+// 	let reader = stream.readable.getReader();
+// 	await writer.write(encoder.encode("Hello, world!"))
+// 	console.log(decoder.decode((await reader.read()).value));
+// 	transport.close();
+```
+
+4. RSA certs **DO NOT WORK**:
 
 ```
 openssl x509 -pubkey -noout -in certificate.pem | openssl ec -pubin -outform der | openssl dgst -sha256 -binary | base64
-```
-
-but that did not work. I also learned it doesn't work with RSA, even though that is suggested in some places.
-
-https://developer.mozilla.org/en-US/docs/Web/API/WebTransport/WebTransport#connecting_with_server_certificate_hashes
-
-```
-openssl req -newkey rsa:2048 -nodes -keyout certificate.key -x509 -out certificate.pem -subj '/CN=Test Certificate' -addext "subjectAltName = DNS:localhost"
-```
-
-```
-openssl x509 -pubkey -noout -in certificate.pem | openssl rsa -pubin -outform der | openssl dgst -sha256 -binary | base64
 ```
 
 From https://www.w3.org/TR/webtransport/#web-transport-configuration: 
@@ -63,7 +75,7 @@ The custom certificate requirements are as follows: the certificate MUST be an X
 The exact list of allowed public key algorithms used in the Subject Public Key Info field (and, as a consequence, in the TLS CertificateVerify message) is implementation-defined; however, it MUST include ECDSA with the secp256r1 (NIST P-256) named group ([RFC3279], Section 2.3.5; [RFC8422]) to provide an interoperable default. It MUST NOT contain RSA keys ([RFC3279], Section 2.3.1).
 ```
 
-### Run chromium
+5. Chromium flag
 
 Flags:  
 `--origin-to-force-quic-on`\
@@ -75,11 +87,3 @@ For MacOS run:
 ```
 
 For any other OS see [here](https://www.chromium.org/developers/how-tos/run-chromium-with-flags/)
-
-### Misc
-
-1. Seems like [ppl have issues](https://github.com/quic-go/webtransport-go/issues/112) connecting WebTransport in Chrome to this webtransport-go implementation.
-
-2. This is interesting, it's an interoperability test for webtransport-go and your local browser. https://github.com/quic-go/webtransport-go/tree/master/interop
-
-
