@@ -17,14 +17,20 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/logging"
+	"github.com/quic-go/quic-go/qlog"
 	"github.com/quic-go/webtransport-go"
 )
 
 const (
 	alpn = "webtransport-go / quic-go"
+
+	qlogDir = "qlog"
 
 	certFile = "certificate.pem"
 	keyFile  = "certificate.key"
@@ -53,7 +59,11 @@ func NewClient(tlsCfg *tls.Config) *client {
 	return &client{
 		d: webtransport.Dialer{
 			RoundTripper: &http3.RoundTripper{
-				TLSClientConfig: &tls.Config{RootCAs: certPool},
+				TLSClientConfig: &tls.Config{
+					RootCAs:            certPool,
+					InsecureSkipVerify: true,
+				},
+				QuicConfig: &quic.Config{Tracer: getQlogger()},
 			},
 		},
 	}
@@ -159,11 +169,16 @@ func main() {
 	}
 	log.Printf("sent %d bytes", n)
 
+	err = str.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	reply, err := io.ReadAll(str)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println("received", reply)
+	log.Println("received", string(reply))
 }
 
 func handleConn(sess *webtransport.Session) {
@@ -183,6 +198,31 @@ func handleConn(sess *webtransport.Session) {
 
 		stream.Close()
 	}
+}
+
+// create a qlog file in QLOGDIR, if that environment variable is set
+func getQlogger() func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer {
+	tracer := func(ctx context.Context, p logging.Perspective, connID quic.ConnectionID) *logging.ConnectionTracer {
+		if _, err := os.Stat(qlogDir); os.IsNotExist(err) {
+			if err := os.MkdirAll(qlogDir, 0755); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		role := "server"
+		if p == logging.PerspectiveClient {
+			role = "client"
+		}
+		filename := fmt.Sprintf("./%s/log_%x_%s.qlog", qlogDir, connID, role)
+		log.Println("creating", filename)
+		f, err := os.Create(filename)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		return qlog.NewConnectionTracer(f, p, connID)
+	}
+	return tracer
 }
 
 func buildTLSConfig(loadFromDisk bool) (cfg *tls.Config, err error) {
