@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,6 +24,8 @@ import (
 )
 
 const (
+	alpn = "webtransport-go / quic-go"
+
 	certFile = "certificate.pem"
 	keyFile  = "certificate.key"
 
@@ -30,34 +33,69 @@ const (
 	defaultLoadCertFromDisk = true
 )
 
-func main() {
-	fmt.Println("- - - - - - - - -")
-	fmt.Println("WebTransport Demo")
-	fmt.Println("- - - - - - - - -")
-	fmt.Println()
+type (
+	client struct {
+		d webtransport.Dialer
+	}
 
-	tlsCfg, hash, err := buildTLSConfig(defaultLoadCertFromDisk)
+	server struct {
+		s *webtransport.Server
+	}
+)
+
+func NewClient(tlsCfg *tls.Config) *client {
+	x509Cert, err := x509.ParseCertificate(tlsCfg.Certificates[0].Certificate[0])
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Println("Server Certificate Hash")
-	fmt.Println(base64.StdEncoding.EncodeToString(hash[:]))
-	fmt.Println()
-
-	server := webtransport.Server{
-		H3: http3.Server{
-			TLSConfig: tlsCfg,
-			Addr:      "localhost:4433",
+	certPool := x509.NewCertPool()
+	certPool.AddCert(x509Cert)
+	return &client{
+		d: webtransport.Dialer{
+			RoundTripper: &http3.RoundTripper{
+				TLSClientConfig: &tls.Config{RootCAs: certPool},
+			},
 		},
-		CheckOrigin: func(r *http.Request) bool { return true },
 	}
-	defer server.Close()
+}
 
-	http.HandleFunc("/demo", func(w http.ResponseWriter, r *http.Request) {
+func (c *client) Close() error {
+	return errors.Join(
+		c.d.RoundTripper.Close(),
+		c.d.Close(),
+	)
+}
+
+func NewServer(addr string, tlsCfg *tls.Config) *server {
+	return &server{
+		s: &webtransport.Server{
+			H3: http3.Server{
+				TLSConfig: tlsCfg,
+				Addr:      addr,
+			},
+			CheckOrigin: func(r *http.Request) bool { return true },
+		},
+	}
+}
+
+func (s *server) CertificateHash() string {
+	x509Cert, err := x509.ParseCertificate(s.s.H3.TLSConfig.Certificates[0].Certificate[0])
+	if err != nil {
+		log.Fatal(err)
+	}
+	hash := sha256.Sum256(x509Cert.Raw)
+	return base64.StdEncoding.EncodeToString(hash[:])
+}
+
+func (s *server) Close() error {
+	return s.s.Close()
+}
+
+func (s *server) Run() {
+	http.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("incoming connection...")
 
-		conn, err := server.Upgrade(w, r)
+		conn, err := s.s.Upgrade(w, r)
 		if err != nil {
 			log.Printf("upgrading failed: %s", err)
 			w.WriteHeader(500)
@@ -70,10 +108,62 @@ func main() {
 		handleConn(conn)
 	})
 
-	log.Println("listening at", server.H3.Addr)
-	if err := server.ListenAndServe(); err != nil {
+	log.Println("Server Certificate Hash")
+	log.Println(s.CertificateHash())
+	log.Println()
+
+	log.Println("listening at", s.s.H3.Addr)
+	if err := s.s.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func main() {
+	fmt.Println("- - - - - - - - -")
+	fmt.Println("WebTransport Demo")
+	fmt.Println("- - - - - - - - -")
+	fmt.Println()
+
+	tlsCfg, err := buildTLSConfig(defaultLoadCertFromDisk)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	s := NewServer("localhost:4433", tlsCfg)
+	defer s.Close()
+	go s.Run()
+
+	c := NewClient(tlsCfg)
+	defer s.Close()
+
+	rsp, sess, err := c.d.Dial(context.Background(), "https://localhost:4433/webtransport", nil)
+	if err != nil {
+		log.Fatal(err)
+	} else if rsp.StatusCode != 200 {
+		log.Fatalf("unexpected status code: %d", rsp.StatusCode)
+	}
+
+	str, err := sess.OpenStream()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = str.SetDeadline(time.Now().Add(time.Minute))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	n, err := str.Write([]byte("yo"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("sent %d bytes", n)
+
+	reply, err := io.ReadAll(str)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("received", reply)
 }
 
 func handleConn(sess *webtransport.Session) {
@@ -85,23 +175,17 @@ func handleConn(sess *webtransport.Session) {
 		}
 		log.Println("accepted stream")
 
-		s, err := io.ReadAll(stream)
+		n, err := io.CopyBuffer(stream, stream, make([]byte, 100))
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Println("received ", string(s))
+		log.Printf("received %d bytes", n)
 
-		_, err = stream.Write([]byte(s))
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		log.Println("sent ", string(s))
 		stream.Close()
 	}
 }
 
-func buildTLSConfig(loadFromDisk bool) (cfg *tls.Config, hash [32]byte, err error) {
+func buildTLSConfig(loadFromDisk bool) (cfg *tls.Config, err error) {
 	var cert tls.Certificate
 
 	if loadFromDisk {
@@ -116,18 +200,10 @@ func buildTLSConfig(loadFromDisk bool) (cfg *tls.Config, hash [32]byte, err erro
 		}
 	}
 
-	var x509Cert *x509.Certificate
-	x509Cert, err = x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return
-	}
-
-	hash = sha256.Sum256(x509Cert.Raw)
-	cfg = &tls.Config{
+	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
-	}
-
-	return
+		NextProtos:   []string{alpn},
+	}, nil
 }
 
 func loadTLSCertificate() (tls.Certificate, error) {

@@ -106,12 +106,13 @@
       const hash = document.getElementById('hash').value;
 
       try {
-        transport = new WebTransport(url, {
+        let opts = {
           "serverCertificateHashes": [{
               "algorithm": "sha-256",
               "value": base64ToArrayBuffer(hash)
           }]
-        });
+        };
+        transport = new WebTransport(url, opts);
         addToEventLog('Initiating connection...');
       } catch (e) {
         addToEventLog('Failed to create connection object. ' + e, 'error');
@@ -275,7 +276,7 @@
 
           <div class="input-line">
             <label for="url">Server URL:</label>
-            <input type="text" name="url" id="url" value="https://127.0.0.1:4433/demo">
+            <input type="text" name="url" id="url" value="https://127.0.0.1:4433/webtransport">
           </div>
           <div class="input-line">
             <label for="url">Cert Hash:</label>
