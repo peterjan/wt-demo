@@ -18,6 +18,8 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -63,7 +65,7 @@ func NewClient(tlsCfg *tls.Config) *client {
 					RootCAs:            certPool,
 					InsecureSkipVerify: true,
 				},
-				QuicConfig: &quic.Config{Tracer: getQlogger()},
+				// QuicConfig: &quic.Config{Tracer: getQlogger()},
 			},
 		},
 	}
@@ -112,7 +114,10 @@ func (s *server) Run() {
 			return
 		}
 		defer func() {
-			_ = conn.CloseWithError(0, "")
+			err = conn.CloseWithError(0, "")
+			if err != nil {
+				log.Fatal(err)
+			}
 		}()
 
 		handleConn(conn)
@@ -143,8 +148,18 @@ func main() {
 	defer s.Close()
 	go s.Run()
 
+	runEchoTest(tlsCfg)
+
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
+	<-signalCh
+	log.Println("Shutting down...")
+	os.Exit(0)
+}
+
+func runEchoTest(tlsCfg *tls.Config) {
 	c := NewClient(tlsCfg)
-	defer s.Close()
+	defer c.Close()
 
 	rsp, sess, err := c.d.Dial(context.Background(), "https://localhost:4433/webtransport", nil)
 	if err != nil {
@@ -158,7 +173,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = str.SetDeadline(time.Now().Add(time.Minute))
+	err = str.SetDeadline(time.Now().Add(time.Second))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -183,10 +198,17 @@ func main() {
 
 func handleConn(sess *webtransport.Session) {
 	for {
+		select {
+		case <-sess.Context().Done():
+			break
+		default:
+		}
+
 		log.Println("waiting for stream...")
 		stream, err := sess.AcceptStream(context.Background())
 		if err != nil {
-			log.Fatal(err)
+			// log.Fatal(err) // TODO: handle this gracefully
+			break
 		}
 		log.Println("accepted stream")
 
